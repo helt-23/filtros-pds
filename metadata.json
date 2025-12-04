@@ -1,0 +1,5 @@
+{
+  "name": "DSP Edge Detective",
+  "description": "A Digital Signal Processing dashboard for Pattern Recognition and Edge Detection (Theme 2.2), featuring real-time 2D convolution, frequency analysis, and AI-assisted reporting.",
+  "requestFramePermissions": []
+}
