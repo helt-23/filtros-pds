@@ -1,4 +1,4 @@
-import { FilterType, ImageSource, Kernel3x3 } from '../types';
+import { FilterType, ImageSource, Kernel3x3, Metrics } from '../types';
 
 interface ReportImages {
   original: string | null;
@@ -131,7 +131,8 @@ export const getStaticReport = (
   source: ImageSource, 
   filter: FilterType,
   images: ReportImages,
-  customKernel?: Kernel3x3
+  customKernel?: Kernel3x3,
+  metrics?: Metrics
 ): string => {
   const details = getFilterDetails(filter, customKernel);
   const freqText = getFrequencyText(filter);
@@ -232,6 +233,29 @@ export const getStaticReport = (
           ${analysisText}
         </p>
       </div>
+
+      ${metrics ? `
+      <!-- 5. Análise Quantitativa -->
+      <div style="margin-bottom: 2rem;">
+        <h3 style="font-family: Arial, sans-serif; font-size: 1.1rem; border-bottom: 1px solid #ccc; padding-bottom: 4px; margin-bottom: 10px; font-weight: bold;">5. ANÁLISE QUANTITATIVA</h3>
+        <table style="width:100%; border-collapse: collapse;">
+          <tr>
+            <td style="border:1px solid #ddd; padding:8px; width:33%;"><strong>Tenengrad</strong><br/>${metrics.tenengrad.toFixed(2)}</td>
+            <td style="border:1px solid #ddd; padding:8px; width:33%;"><strong>Densidade de Bordas</strong><br/>${(metrics.edgeDensity*100).toFixed(1)}%</td>
+            <td style="border:1px solid #ddd; padding:8px; width:33%;"><strong>CNR</strong><br/>${metrics.cnr.toFixed(2)}</td>
+          </tr>
+          <tr>
+            <td style="border:1px solid #ddd; padding:8px;"><strong>SNR (Fundo)</strong><br/>${metrics.snrBg.toFixed(2)}</td>
+            <td style="border:1px solid #ddd; padding:8px;"><strong>Pico Perfil</strong><br/>${metrics.linePeak.toFixed(1)}</td>
+            <td style="border:1px solid #ddd; padding:8px;"><strong>Largura a Meia Altura</strong><br/>${metrics.lineFwhm.toFixed(1)} px</td>
+          </tr>
+          <tr>
+            <td style="border:1px solid #ddd; padding:8px;"><strong>Razão Pico/Fundo</strong><br/>${metrics.linePeakToBg.toFixed(2)}</td>
+            <td style="border:1px solid #ddd; padding:8px;" colspan="2"><em>Interpretação:</em> Tenengrad alto indica bordas fortes; CNR/SNR altos sugerem bom compromisso entre realce e limpeza do fundo.</td>
+          </tr>
+        </table>
+      </div>
+      ` : ''}
 
       <!-- 4. Conclusão -->
       <div style="margin-bottom: 2rem; border-top: 1px solid #000; padding-top: 1rem;">

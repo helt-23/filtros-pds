@@ -232,11 +232,13 @@ export const applyConvolution = (
   // Calcula propriedades do kernel
   let kernelSum = 0;
   let positiveSum = 0;
+  let kernelL2Sum = 0;
 
   for (let r of kernelMatrix) {
     for (let v of r) {
       kernelSum += v;
       if (v > 0) positiveSum += v;
+      kernelL2Sum += v * v;
     }
   }
 
@@ -248,8 +250,9 @@ export const applyConvolution = (
   let normalizationFactor = 1.0;
 
   if (isHighPass) {
-    // Para filtros de borda: normaliza pela soma dos valores positivos
-    normalizationFactor = Math.max(1, positiveSum) / 4.0;
+    // Normalização por energia (L2) do kernel para comparação justa entre operadores
+    const kernelL2 = Math.sqrt(Math.max(1e-9, kernelL2Sum));
+    normalizationFactor = kernelL2;
   } else if (isGaussian) {
     // Para Gaussian: não precisa de normalização extra
     normalizationFactor = 1.0;
@@ -306,29 +309,31 @@ export const applyLoGConvolution = (
   threshold: number = 0
 ): ImageData => {
   const logKernel = generateLoGKernel(sigma);
-
-  // Para LoG, ajustamos o ganho baseado no sigma
-  // Sigma alto → menor ganho (mais suavização)
-  const gain = 1.0 / (sigma * 0.8 + 0.2);
-
   const convolved = applyConvolution(src, logKernel.matrix, 0);
-  const output = new ImageData(convolved.width, convolved.height);
 
-  // Aplica ganho ajustado e threshold
+  // Auto-contraste: normaliza para 0-255 usando min/max
+  let minVal = 255;
+  let maxVal = 0;
   for (let i = 0; i < convolved.data.length; i += 4) {
-    let val = convolved.data[i];
-    val = val * gain;
-
-    if (val < threshold) val = 0;
-
-    val = Math.min(255, Math.max(0, val));
-
-    output.data[i] = val;
-    output.data[i + 1] = val;
-    output.data[i + 2] = val;
-    output.data[i + 3] = 255;
+    const v = convolved.data[i];
+    if (v < minVal) minVal = v;
+    if (v > maxVal) maxVal = v;
+  }
+  const range = Math.max(1, maxVal - minVal);
+  const rescaled = new ImageData(convolved.width, convolved.height);
+  for (let i = 0; i < convolved.data.length; i += 4) {
+    const v = convolved.data[i];
+    const n = Math.min(255, Math.max(0, ((v - minVal) * 255) / range));
+    rescaled.data[i] = n;
+    rescaled.data[i + 1] = n;
+    rescaled.data[i + 2] = n;
+    rescaled.data[i + 3] = 255;
   }
 
+  // Limiar: usa slider se >0, senão percentil (90%)
+  const t =
+    threshold > 0 ? threshold : computePercentileThreshold(rescaled, 90);
+  const output = thresholdImage(rescaled, t);
   return output;
 };
 
@@ -464,4 +469,144 @@ export const getLineProfile = (imageData: ImageData, rowIndex: number) => {
     data.push({ x, intensity });
   }
   return data;
+};
+
+export const computeTenengrad = (imageData: ImageData): number => {
+  let sum = 0;
+  let count = 0;
+  for (let i = 0; i < imageData.data.length; i += 4) {
+    const v = imageData.data[i];
+    sum += v * v;
+    count++;
+  }
+  return count > 0 ? sum / count : 0;
+};
+
+export const computeEdgeDensity = (
+  imageData: ImageData,
+  threshold: number
+): number => {
+  let edge = 0;
+  let total = 0;
+  for (let i = 0; i < imageData.data.length; i += 4) {
+    const v = imageData.data[i];
+    if (v > threshold) edge++;
+    total++;
+  }
+  return total > 0 ? edge / total : 0;
+};
+
+export const computeNonZeroFraction = (imageData: ImageData): number => {
+  let nz = 0;
+  let total = 0;
+  for (let i = 0; i < imageData.data.length; i += 4) {
+    const v = imageData.data[i];
+    if (v > 0) nz++;
+    total++;
+  }
+  return total > 0 ? nz / total : 0;
+};
+
+export const computeCNR = (imageData: ImageData, threshold: number): number => {
+  let sumE = 0,
+    sumE2 = 0,
+    nE = 0;
+  let sumB = 0,
+    sumB2 = 0,
+    nB = 0;
+  for (let i = 0; i < imageData.data.length; i += 4) {
+    const v = imageData.data[i];
+    if (v > threshold) {
+      sumE += v;
+      sumE2 += v * v;
+      nE++;
+    } else {
+      sumB += v;
+      sumB2 += v * v;
+      nB++;
+    }
+  }
+  if (nE === 0 || nB === 0) return 0;
+  const muE = sumE / nE;
+  const muB = sumB / nB;
+  const varE = Math.max(0, sumE2 / nE - muE * muE);
+  const varB = Math.max(0, sumB2 / nB - muB * muB);
+  const denom = Math.sqrt(varE + varB);
+  return denom > 0 ? Math.abs(muE - muB) / denom : 0;
+};
+
+export const computeBackgroundSNR = (
+  imageData: ImageData,
+  threshold: number
+): number => {
+  let sum = 0,
+    sum2 = 0,
+    n = 0;
+  for (let i = 0; i < imageData.data.length; i += 4) {
+    const v = imageData.data[i];
+    if (v <= threshold) {
+      sum += v;
+      sum2 += v * v;
+      n++;
+    }
+  }
+  if (n === 0) return 0;
+  const mu = sum / n;
+  const varBg = Math.max(0, sum2 / n - mu * mu);
+  const sigma = Math.sqrt(varBg);
+  return sigma > 0 ? mu / sigma : 0;
+};
+
+export const computeLineMetrics = (
+  profile: { x: number; intensity: number }[]
+) => {
+  if (!profile.length) return { peak: 0, fwhm: 0, peakToBg: 0 };
+  let peak = 0;
+  let peakIdx = 0;
+  for (let i = 0; i < profile.length; i++) {
+    const v = profile[i].intensity;
+    if (v > peak) {
+      peak = v;
+      peakIdx = i;
+    }
+  }
+  const half = peak / 2;
+  let left = peakIdx,
+    right = peakIdx;
+  while (left > 0 && profile[left].intensity > half) left--;
+  while (right < profile.length - 1 && profile[right].intensity > half) right++;
+  const fwhm = Math.max(0, profile[right].x - profile[left].x);
+  const sorted = [...profile].map((p) => p.intensity).sort((a, b) => a - b);
+  const q = Math.max(1, Math.floor(sorted.length * 0.25));
+  const bgMean = sorted.slice(0, q).reduce((a, b) => a + b, 0) / q;
+  const peakToBg = bgMean > 0 ? peak / bgMean : 0;
+  return { peak, fwhm, peakToBg };
+};
+
+export const computePercentileThreshold = (
+  imageData: ImageData,
+  percentile: number
+): number => {
+  const p = Math.min(100, Math.max(0, percentile));
+  const values: number[] = [];
+  for (let i = 0; i < imageData.data.length; i += 4) {
+    values.push(imageData.data[i]);
+  }
+  if (values.length === 0) return 0;
+  values.sort((a, b) => a - b);
+  const idx = Math.floor((p / 100) * (values.length - 1));
+  return values[idx];
+};
+
+export const thresholdImage = (imageData: ImageData, t: number): ImageData => {
+  const output = new ImageData(imageData.width, imageData.height);
+  for (let i = 0; i < imageData.data.length; i += 4) {
+    let v = imageData.data[i];
+    if (v < t) v = 0;
+    output.data[i] = v;
+    output.data[i + 1] = v;
+    output.data[i + 2] = v;
+    output.data[i + 3] = 255;
+  }
+  return output;
 };

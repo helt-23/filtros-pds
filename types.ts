@@ -34,3 +34,13 @@ export interface ProcessingResult {
   histogram: { value: number; count: number }[];
   profile: { x: number; intensity: number }[];
 }
+
+export interface Metrics {
+  tenengrad: number;
+  edgeDensity: number;
+  cnr: number;
+  snrBg: number;
+  linePeak: number;
+  lineFwhm: number;
+  linePeakToBg: number;
+}

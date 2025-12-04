@@ -1,5 +1,11 @@
 import React, { useState, useEffect, useRef, useCallback } from "react";
-import { FilterType, ImageSource, Kernel3x3, NoiseType } from "./types";
+import {
+  FilterType,
+  ImageSource,
+  Kernel3x3,
+  NoiseType,
+  Metrics,
+} from "./types";
 import {
   KERNELS,
   drawSyntheticImage,
@@ -9,6 +15,15 @@ import {
   generateLoGKernel,
   applyLoGConvolution,
   generateGaussianKernel,
+  getLineProfile,
+  computeTenengrad,
+  computeEdgeDensity,
+  computeCNR,
+  computeBackgroundSNR,
+  computeLineMetrics,
+  computePercentileThreshold,
+  thresholdImage,
+  computeNonZeroFraction,
 } from "./services/dspService";
 import { generateDSPReport } from "./services/geminiService";
 import { getStaticReport } from "./services/reportTemplates";
@@ -61,6 +76,7 @@ const App: React.FC = () => {
   // Report State
   const [reportText, setReportText] = useState<string>("");
   const [isGeneratingReport, setIsGeneratingReport] = useState(false);
+  const [metrics, setMetrics] = useState<Metrics | null>(null);
 
   // Canvas Refs
   const originalCanvasRef = useRef<HTMLCanvasElement>(null);
@@ -120,6 +136,8 @@ const App: React.FC = () => {
 
       // 2. Aplicação do Filtro Principal
       let resultImageData: ImageData;
+      let metricImage: ImageData | null = null;
+      let metricThreshold: number = threshold;
 
       if (activeFilter === FilterType.NONE) {
         resultImageData = processingData;
@@ -134,7 +152,12 @@ const App: React.FC = () => {
           KERNELS[FilterType.SOBEL_Y].matrix,
           0
         );
-        resultImageData = combineMagnitude(sx, sy, threshold);
+        const mag = combineMagnitude(sx, sy, 0);
+        const t =
+          threshold > 0 ? threshold : computePercentileThreshold(mag, 90);
+        resultImageData = thresholdImage(mag, t);
+        metricImage = mag;
+        metricThreshold = t;
       } else if (activeFilter === FilterType.PREWITT_MAG) {
         const px = applyConvolution(
           processingData,
@@ -146,17 +169,55 @@ const App: React.FC = () => {
           KERNELS[FilterType.PREWITT_Y].matrix,
           0
         );
-        resultImageData = combineMagnitude(px, py, threshold);
+        const mag = combineMagnitude(px, py, 0);
+        const t =
+          threshold > 0 ? threshold : computePercentileThreshold(mag, 90);
+        resultImageData = thresholdImage(mag, t);
+        metricImage = mag;
+        metricThreshold = t;
       } else if (activeFilter === FilterType.LOG) {
         resultImageData = applyLoGConvolution(processingData, sigma, threshold);
+        metricImage = resultImageData;
+        metricThreshold = threshold;
+      } else if (activeFilter === FilterType.LAPLACIAN) {
+        const conv = applyConvolution(
+          processingData,
+          KERNELS[FilterType.LAPLACIAN].matrix,
+          0
+        );
+        const t =
+          threshold > 0 ? threshold : computePercentileThreshold(conv, 90);
+        resultImageData = thresholdImage(conv, t);
+        metricImage = conv;
+        metricThreshold = t;
       } else {
         const kernel = KERNELS[activeFilter];
         resultImageData = kernel
           ? applyConvolution(processingData, kernel.matrix, threshold)
           : processingData;
+        metricImage = resultImageData;
+        metricThreshold = threshold;
       }
 
       destCtx.putImageData(resultImageData, 0, 0);
+
+      const midRow = Math.floor((metricImage || resultImageData).height / 2);
+      const baseImg = metricImage || resultImageData;
+      const profile = getLineProfile(baseImg, midRow);
+      const line = computeLineMetrics(profile);
+      const ten = computeTenengrad(baseImg);
+      const dens = computeNonZeroFraction(resultImageData);
+      const cnr = computeCNR(baseImg, metricThreshold);
+      const snr = computeBackgroundSNR(baseImg, metricThreshold);
+      setMetrics({
+        tenengrad: ten,
+        edgeDensity: dens,
+        cnr,
+        snrBg: snr,
+        linePeak: line.peak,
+        lineFwhm: line.fwhm,
+        linePeakToBg: line.peakToBg,
+      });
     } catch (error) {
       console.error("Erro no processamento da imagem:", error);
     }
@@ -267,7 +328,8 @@ const App: React.FC = () => {
           processed: processedImg,
           spectrum: spectrumImg,
         },
-        customKernel
+        customKernel,
+        metrics || undefined
       );
       setReportText(staticReport);
       return;
@@ -857,6 +919,69 @@ const App: React.FC = () => {
                       DC no centro do espectro representa frequência zero
                     </p>
                   </div>
+                  {metrics && (
+                    <div className="p-3 bg-white rounded border border-gray-200 text-xs text-gray-700">
+                      <h3 className="text-xs font-semibold text-gray-700 mb-2 flex items-center gap-1">
+                        <Activity size={12} /> Métricas (Quantitativas)
+                      </h3>
+                      <div className="grid grid-cols-2 gap-2">
+                        <div className="border rounded p-2">
+                          <div className="text-[10px] text-gray-500">
+                            Tenengrad
+                          </div>
+                          <div className="text-sm font-bold">
+                            {metrics.tenengrad.toFixed(2)}
+                          </div>
+                        </div>
+                        <div className="border rounded p-2">
+                          <div className="text-[10px] text-gray-500">
+                            Densidade de Bordas
+                          </div>
+                          <div className="text-sm font-bold">
+                            {(metrics.edgeDensity * 100).toFixed(1)}%
+                          </div>
+                        </div>
+                        <div className="border rounded p-2">
+                          <div className="text-[10px] text-gray-500">CNR</div>
+                          <div className="text-sm font-bold">
+                            {metrics.cnr.toFixed(2)}
+                          </div>
+                        </div>
+                        <div className="border rounded p-2">
+                          <div className="text-[10px] text-gray-500">
+                            SNR (Fundo)
+                          </div>
+                          <div className="text-sm font-bold">
+                            {metrics.snrBg.toFixed(2)}
+                          </div>
+                        </div>
+                        <div className="border rounded p-2">
+                          <div className="text-[10px] text-gray-500">
+                            Pico Perfil
+                          </div>
+                          <div className="text-sm font-bold">
+                            {metrics.linePeak.toFixed(1)}
+                          </div>
+                        </div>
+                        <div className="border rounded p-2">
+                          <div className="text-[10px] text-gray-500">
+                            Largura a Meia Altura
+                          </div>
+                          <div className="text-sm font-bold">
+                            {metrics.lineFwhm.toFixed(1)} px
+                          </div>
+                        </div>
+                        <div className="border rounded p-2 col-span-2">
+                          <div className="text-[10px] text-gray-500">
+                            Razão Pico/Fundo
+                          </div>
+                          <div className="text-sm font-bold">
+                            {metrics.linePeakToBg.toFixed(2)}
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  )}
                 </div>
               </div>
             </div>
